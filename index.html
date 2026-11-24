@@ -48,12 +48,11 @@
             }
         }
 
-        // Hàm làm sạch dữ liệu nhập vào (Xóa khoảng trắng, xóa https://)
         function cleanInput(val, isEndpoint = false) {
             let str = val.trim();
             if (isEndpoint) {
-                str = str.replace(/^https?:\/\//i, ''); // Xóa http:// hoặc https://
-                str = str.replace(/\/+$/, ''); // Xóa dấu / ở cuối
+                str = str.replace(/^https?:\/\//i, '');
+                str = str.replace(/\/+$/, '');
             }
             return str;
         }
@@ -89,16 +88,29 @@
             return await hmac(kService, 'aws4_request');
         }
 
+        // SỬA LỖI: Hàm sha256 bây giờ có thể xử lý cả file ảnh/âm thanh (ArrayBuffer)
         async function sha256(message) {
-            const encoder = new TextEncoder();
-            const hash = await crypto.subtle.digest('SHA-256', encoder.encode(message));
+            let data;
+            if (message instanceof ArrayBuffer) {
+                data = message;
+            } else if (message instanceof Uint8Array) {
+                data = message;
+            } else {
+                data = new TextEncoder().encode(message);
+            }
+            const hash = await crypto.subtle.digest('SHA-256', data);
             return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
         async function signedFetch(method, urlString, body = null, extraHeaders = {}) {
             const url = new URL(urlString);
             const endpoint = localStorage.getItem('b2_endpoint');
-            const region = endpoint.split('.')[1]; 
+            
+            // Lấy region chính xác
+            let region = 'us-east-1'; 
+            if (endpoint.includes('us-west')) region = endpoint.split('.')[1];
+            else if (endpoint.includes('us-east')) region = endpoint.split('.')[1];
+            else if (endpoint.includes('eu-central')) region = endpoint.split('.')[1];
             
             const now = new Date();
             const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
@@ -152,11 +164,10 @@
             };
             for(let k in extraHeaders) fetchHeaders[k] = extraHeaders[k];
             
-            // Thêm chế độ bắt lỗi mạng rõ ràng hơn
             try {
                 return await fetch(url.toString(), { method, headers: fetchHeaders, body });
             } catch (err) {
-                throw new Error("Không thể kết nối B2. Hãy chắc chắn Endpoint và Tên Bucket đúng.");
+                throw new Error("Lỗi kết nối mạng. Hãy chắc chắn đã bật CORS trên B2.");
             }
         }
 
