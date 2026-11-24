@@ -5,11 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Auto Video App</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Đã đổi sang jsdelivr để load ổn định hơn ở VN -->
-    <script type="module">
-        import { AwsClient } from 'https://cdn.jsdelivr.net/npm/aws4fetch@1.0.13/dist/aws4fetch.min.js';
-        window.AwsClient = AwsClient;
-    </script>
 </head>
 <body class="bg-gray-100 p-4 font-sans text-gray-800">
     <div class="max-w-md mx-auto bg-white p-6 rounded-lg shadow-lg mt-4">
@@ -72,40 +67,102 @@
             }
         }
 
-        function getAWS() {
-            // Kiểm tra xem thư viện đã tải xong chưa
-            if (!window.AwsClient) {
-                throw new Error("Chưa tải được thư viện kết nối. Vui lòng tải lại trang (F5)!");
-            }
-
-            const endpoint = localStorage.getItem('b2_endpoint');
-            let region = 'us-west-004';
-            if(endpoint.includes('us-west-001')) region = 'us-west-001';
-            if(endpoint.includes('us-west-002')) region = 'us-west-002';
-            if(endpoint.includes('eu-central')) region = 'eu-central-003';
-
-            return new window.AwsClient({
-                accessKeyId: localStorage.getItem('b2_key_id'),
-                secretAccessKey: localStorage.getItem('b2_app_key'),
-                service: 's3',
-                region: region
-            });
+        // Hàm mã hóa bằng chip điện thoại (Không cần thư viện ngoài)
+        async function hmac(key, string) {
+            const encoder = new TextEncoder();
+            const keyData = typeof key === 'string' ? encoder.encode(key) : new Uint8Array(key);
+            const cryptoKey = await crypto.subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+            return await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(string));
         }
 
-        async function clearInputFolder(aws, bucket, endpoint) {
+        async function getSignatureKey(key, dateStamp, regionName, serviceName) {
+            const kDate = await hmac('AWS4' + key, dateStamp);
+            const kRegion = await hmac(kDate, regionName);
+            const kService = await hmac(kRegion, serviceName);
+            return await hmac(kService, 'aws4_request');
+        }
+
+        async function sha256(message) {
+            const encoder = new TextEncoder();
+            const hash = await crypto.subtle.digest('SHA-256', encoder.encode(message));
+            return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        async function signedFetch(method, urlString, body = null, extraHeaders = {}) {
+            const url = new URL(urlString);
+            const endpoint = localStorage.getItem('b2_endpoint');
+            const region = endpoint.split('.')[1]; 
+            
+            const now = new Date();
+            const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
+            const dateStamp = amzDate.slice(0, 8);
+            
+            let payloadHash = '';
+            if (body) {
+                if (body instanceof File || body instanceof Blob) {
+                    payloadHash = await sha256(await body.arrayBuffer());
+                } else {
+                    payloadHash = await sha256(body);
+                }
+            } else {
+                payloadHash = await sha256('');
+            }
+            
+            const canonicalHeadersObj = {
+                'host': url.host,
+                'x-amz-date': amzDate,
+                'x-amz-content-sha256': payloadHash,
+                ...extraHeaders
+            };
+            
+            const sortedHeaderKeys = Object.keys(canonicalHeadersObj).map(k => k.toLowerCase()).sort();
+            const canonicalHeaders = sortedHeaderKeys.map(k => `${k}:${String(canonicalHeadersObj[k]).trim()}\n`).join('');
+            const signedHeaders = sortedHeaderKeys.join(';');
+            
+            const queryString = url.search ? url.search.substring(1) : '';
+            let canonicalQueryString = '';
+            if (queryString) {
+                const params = Array.from(new URLSearchParams(queryString).entries()).sort((a, b) => a[0].localeCompare(b[0]));
+                canonicalQueryString = params.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+            }
+            
+            const canonicalRequest = [method, url.pathname, canonicalQueryString, canonicalHeaders, signedHeaders, payloadHash].join('\n');
+            const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+            const stringToSign = ['AWS4-HMAC-SHA256', amzDate, credentialScope, await sha256(canonicalRequest)].join('\n');
+            
+            const secretKey = localStorage.getItem('b2_app_key');
+            const accessKey = localStorage.getItem('b2_key_id');
+            const signingKey = await getSignatureKey(secretKey, dateStamp, region, 's3');
+            const signatureBuffer = await hmac(signingKey, stringToSign);
+            const signature = Array.from(new Uint8Array(signatureBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+            
+            const authorizationHeader = `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+            
+            const fetchHeaders = {
+                'Authorization': authorizationHeader,
+                'x-amz-date': amzDate,
+                'x-amz-content-sha256': payloadHash
+            };
+            for(let k in extraHeaders) fetchHeaders[k] = extraHeaders[k];
+            
+            return await fetch(url.toString(), { method, headers: fetchHeaders, body });
+        }
+
+        async function clearInputFolder(bucket, endpoint) {
             document.getElementById('status').innerText = "Đang dọn dẹp file cũ...";
             const listUrl = `https://${bucket}.${endpoint}/?list-type=2&prefix=input/`;
-            const listRes = await aws.fetch(listUrl);
+            const listRes = await signedFetch('GET', listUrl);
             const xml = await listRes.text();
             const keys = [...xml.matchAll(/<Key>(.*?)<\/Key>/g)].map(m => m[1]);
             for(const key of keys) {
-                await aws.fetch(`https://${bucket}.${endpoint}/${key}`, { method: 'DELETE' });
+                const encodedKey = key.split('/').map(encodeURIComponent).join('/');
+                await signedFetch('DELETE', `https://${bucket}.${endpoint}/${encodedKey}`);
             }
         }
 
-        async function uploadToB2(aws, file, filename, bucket, endpoint) {
+        async function uploadToB2(file, filename, bucket, endpoint) {
             const url = `https://${bucket}.${endpoint}/input/${filename}`;
-            const res = await aws.fetch(url, { method: 'PUT', body: file });
+            const res = await signedFetch('PUT', url, file, { 'Content-Type': file.type || 'application/octet-stream' });
             if(!res.ok) throw new Error("Lỗi upload: " + await res.text());
         }
 
@@ -128,22 +185,21 @@
             try {
                 const bucket = localStorage.getItem('b2_bucket');
                 const endpoint = localStorage.getItem('b2_endpoint');
-                const aws = getAWS();
 
-                await clearInputFolder(aws, bucket, endpoint);
+                await clearInputFolder(bucket, endpoint);
 
                 for(let i=0; i<audioFiles.length; i++) {
                     status.innerText = `Đang upload âm thanh ${i+1}/${audioFiles.length}...`;
                     const prefix = (i+1).toString().padStart(2, '0');
                     const cleanName = audioFiles[i].name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-                    await uploadToB2(aws, audioFiles[i], `audio_${prefix}_${cleanName}`, bucket, endpoint);
+                    await uploadToB2(audioFiles[i], `audio_${prefix}_${cleanName}`, bucket, endpoint);
                 }
 
                 for(let i=0; i<imageFiles.length; i++) {
                     status.innerText = `Đang upload ảnh ${i+1}/${imageFiles.length}...`;
                     const prefix = (i+1).toString().padStart(2, '0');
                     const cleanName = imageFiles[i].name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-                    await uploadToB2(aws, imageFiles[i], `image_${prefix}_${cleanName}`, bucket, endpoint);
+                    await uploadToB2(imageFiles[i], `image_${prefix}_${cleanName}`, bucket, endpoint);
                 }
 
                 status.innerText = "Đang ra lệnh cho AI render...";
@@ -175,4 +231,4 @@
         }
     </script>
 </body>
-</html>
+    </html>
