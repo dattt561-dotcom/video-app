@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Auto Video App</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Đã sửa lại cách tải thư viện aws4fetch -->
+    <!-- Đã đổi sang jsdelivr để load ổn định hơn ở VN -->
     <script type="module">
-        import { AwsClient } from 'https://unpkg.com/aws4fetch@1.0.13/dist/aws4fetch.js';
+        import { AwsClient } from 'https://cdn.jsdelivr.net/npm/aws4fetch@1.0.13/dist/aws4fetch.min.js';
         window.AwsClient = AwsClient;
     </script>
 </head>
@@ -73,13 +73,17 @@
         }
 
         function getAWS() {
+            // Kiểm tra xem thư viện đã tải xong chưa
+            if (!window.AwsClient) {
+                throw new Error("Chưa tải được thư viện kết nối. Vui lòng tải lại trang (F5)!");
+            }
+
             const endpoint = localStorage.getItem('b2_endpoint');
             let region = 'us-west-004';
             if(endpoint.includes('us-west-001')) region = 'us-west-001';
             if(endpoint.includes('us-west-002')) region = 'us-west-002';
             if(endpoint.includes('eu-central')) region = 'eu-central-003';
 
-            // Sử dụng window.AwsClient đã được import ở trên
             return new window.AwsClient({
                 accessKeyId: localStorage.getItem('b2_key_id'),
                 secretAccessKey: localStorage.getItem('b2_app_key'),
@@ -128,16 +132,13 @@
 
                 await clearInputFolder(aws, bucket, endpoint);
 
-                // Upload âm thanh
                 for(let i=0; i<audioFiles.length; i++) {
                     status.innerText = `Đang upload âm thanh ${i+1}/${audioFiles.length}...`;
                     const prefix = (i+1).toString().padStart(2, '0');
-                    // Làm sạch tên file để không bị lỗi khi upload
                     const cleanName = audioFiles[i].name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
                     await uploadToB2(aws, audioFiles[i], `audio_${prefix}_${cleanName}`, bucket, endpoint);
                 }
 
-                // Upload ảnh
                 for(let i=0; i<imageFiles.length; i++) {
                     status.innerText = `Đang upload ảnh ${i+1}/${imageFiles.length}...`;
                     const prefix = (i+1).toString().padStart(2, '0');
@@ -145,7 +146,6 @@
                     await uploadToB2(aws, imageFiles[i], `image_${prefix}_${cleanName}`, bucket, endpoint);
                 }
 
-                // Ra lệnh cho GitHub
                 status.innerText = "Đang ra lệnh cho AI render...";
                 const ghToken = localStorage.getItem('gh_token');
                 const ghUser = localStorage.getItem('gh_username');
@@ -175,4 +175,4 @@
         }
     </script>
 </body>
-    </html>
+</html>
