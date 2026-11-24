@@ -11,8 +11,7 @@
         <h1 class="text-xl font-bold mb-4 text-center text-blue-600">Tạo Video Tự Động</h1>
         
         <div id="config-section" class="mb-4 hidden">
-            <p class="text-sm text-gray-500 mb-2">Thông tin đã được nạp sẵn. Bấm Lưu để bắt đầu.</p>
-            <!-- ĐÃ ĐIỀN SẴN THÔNG TIN CỦA BẠN VÀO ĐÂY -->
+            <p class="text-sm text-gray-500 mb-2">Thông tin đã nạp sẵn. Bấm Lưu để bắt đầu.</p>
             <input type="text" id="gh_token" value="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" class="w-full border p-2 rounded mb-2 text-sm">
             <input type="text" id="gh_username" value="dattt561-dotcom" class="w-full border p-2 rounded mb-2 text-sm">
             <input type="text" id="b2_bucket" value="auto-video-dat123" class="w-full border p-2 rounded mb-2 text-sm">
@@ -40,7 +39,6 @@
     </div>
 
     <script>
-        // Tự động chuyển sang màn hình Upload nếu đã có cấu hình
         window.onload = () => {
             if(localStorage.getItem('b2_endpoint')) {
                 document.getElementById('config-section').classList.add('hidden');
@@ -59,7 +57,7 @@
             localStorage.setItem('b2_app_key', document.getElementById('b2_app_key').value.trim());
             
             let ep = document.getElementById('b2_endpoint').value.trim();
-            ep = ep.replace(/^https?:\/\//i, '').replace(/\/+$/, ''); // Xóa https:// và dấu / cuối
+            ep = ep.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
             localStorage.setItem('b2_endpoint', ep);
             
             location.reload();
@@ -86,9 +84,9 @@
             return await hmac(kService, 'aws4_request');
         }
 
+        // Hàm sha256 nhẹ, chỉ dùng cho chuỗi string, không dùng cho File để tránh tràn RAM
         async function sha256(message) {
-            let data = message instanceof ArrayBuffer || message instanceof Uint8Array ? message : new TextEncoder().encode(message);
-            const hash = await crypto.subtle.digest('SHA-256', data);
+            const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(message));
             return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
@@ -96,7 +94,6 @@
             const url = new URL(urlString);
             const endpoint = localStorage.getItem('b2_endpoint');
             
-            // Xác định Region chuẩn xác (us-east-005)
             let region = 'us-east-005';
             if (endpoint.includes('us-west-004')) region = 'us-west-004';
             else if (endpoint.includes('us-west-002')) region = 'us-west-002';
@@ -106,16 +103,8 @@
             const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
             const dateStamp = amzDate.slice(0, 8);
             
-            let payloadHash = '';
-            if (body) {
-                if (body instanceof File || body instanceof Blob) {
-                    payloadHash = await sha256(await body.arrayBuffer());
-                } else {
-                    payloadHash = await sha256(body);
-                }
-            } else {
-                payloadHash = await sha256('');
-            }
+            // SỬ DỤNG UNSIGNED-PAYLOAD ĐỂ ĐIỆN THOẠI KHÔNG BỊ TRÀN RAM
+            const payloadHash = 'UNSIGNED-PAYLOAD';
             
             const canonicalHeadersObj = {
                 'host': url.host,
@@ -154,17 +143,16 @@
             };
             for(let k in extraHeaders) fetchHeaders[k] = extraHeaders[k];
             
-            // Thêm thời gian chờ (timeout) để không bị treo
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 giây
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // Tăng lên 60 giây
 
             try {
                 return await fetch(url.toString(), { method, headers: fetchHeaders, body, signal: controller.signal });
             } catch (err) {
                 if (err.name === 'AbortError') {
-                    throw new Error("Mạng quá chậm hoặc Backblaze không phản hồi.");
+                    throw new Error("Mạng quá chậm, quá trình tải file lên bị quá thời gian.");
                 }
-                throw new Error("Lỗi kết nối B2 (CORS). Hãy vào Backblaze bật lại CORS Rules.");
+                throw new Error("Không thể kết nối B2. Hãy kiểm tra lại CORS trên Backblaze.");
             } finally {
                 clearTimeout(timeoutId);
             }
@@ -185,7 +173,10 @@
         async function uploadToB2(file, filename, bucket, endpoint) {
             const url = `https://${bucket}.${endpoint}/input/${filename}`;
             const res = await signedFetch('PUT', url, file, { 'Content-Type': file.type || 'application/octet-stream' });
-            if(!res.ok) throw new Error("Lỗi upload file. Có thể Key B2 không có quyền ghi.");
+            if(!res.ok) {
+                const errText = await res.text();
+                throw new Error("Lỗi upload: " + errText);
+            }
         }
 
         async function startRender() {
@@ -208,10 +199,8 @@
                 const bucket = localStorage.getItem('b2_bucket');
                 const endpoint = localStorage.getItem('b2_endpoint');
 
-                // 1. Dọn dẹp file trên B2
                 await clearInputFolder(bucket, endpoint);
 
-                // 2. Upload âm thanh
                 for(let i=0; i<audioFiles.length; i++) {
                     status.innerText = `Đang upload âm thanh ${i+1}/${audioFiles.length}...`;
                     const prefix = (i+1).toString().padStart(2, '0');
@@ -219,7 +208,6 @@
                     await uploadToB2(audioFiles[i], `audio_${prefix}_${cleanName}`, bucket, endpoint);
                 }
 
-                // 3. Upload ảnh
                 for(let i=0; i<imageFiles.length; i++) {
                     status.innerText = `Đang upload ảnh ${i+1}/${imageFiles.length}...`;
                     const prefix = (i+1).toString().padStart(2, '0');
@@ -227,7 +215,6 @@
                     await uploadToB2(imageFiles[i], `image_${prefix}_${cleanName}`, bucket, endpoint);
                 }
 
-                // 4. Ra lệnh cho GitHub chạy
                 status.innerText = "Đang ra lệnh cho AI render...";
                 const ghToken = localStorage.getItem('gh_token');
                 const ghUser = localStorage.getItem('gh_username');
@@ -242,12 +229,12 @@
                 });
 
                 if(!ghRes.ok) {
-                    if (ghRes.status === 401) throw new Error("GitHub Token bị sai. Hãy kiểm tra lại.");
-                    if (ghRes.status === 404) throw new Error("Không tìm thấy repo auto-video-bot. Hãy kiểm tra tên Github.");
+                    if (ghRes.status === 401) throw new Error("GitHub Token bị sai.");
+                    if (ghRes.status === 404) throw new Error("Không tìm thấy repo auto-video-bot.");
                     throw new Error("Lỗi gửi lệnh GitHub.");
                 }
 
-                status.innerHTML = "✅ <b>THÀNH CÔNG!</b><br>Bot đang render (khoảng 10-15 phút).<br>Video sẽ nằm trong B2 của bạn.";
+                status.innerHTML = "✅ <b>THÀNH CÔNG!</b><br>Bot đang render (10-15 phút).<br>Video sẽ nằm trong B2 của bạn.";
                 btn.innerText = "HOÀN TẤT";
                 btn.classList.replace('bg-gray-400', 'bg-green-600');
                 
@@ -261,4 +248,4 @@
         }
     </script>
 </body>
-    </html>
+                </html>
