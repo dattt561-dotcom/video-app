@@ -10,7 +10,6 @@
     <div class="max-w-md mx-auto bg-white p-6 rounded-lg shadow-lg mt-4">
         <h1 class="text-xl font-bold mb-4 text-center text-blue-600">Tạo Video Tự Động</h1>
         
-        <!-- Phần cài đặt -->
         <div id="config-section" class="mb-4 hidden">
             <p class="text-sm text-gray-500 mb-2">Nhập 1 lần duy nhất. App tự lưu trên điện thoại.</p>
             <input type="text" id="gh_token" placeholder="GitHub Token (ghp_...)" class="w-full border p-2 rounded mb-2 text-sm">
@@ -18,11 +17,10 @@
             <input type="text" id="b2_bucket" placeholder="Tên Bucket B2 (VD: auto-video-dat123)" class="w-full border p-2 rounded mb-2 text-sm">
             <input type="text" id="b2_key_id" placeholder="B2 Key ID (005...)" class="w-full border p-2 rounded mb-2 text-sm">
             <input type="text" id="b2_app_key" placeholder="B2 App Key (K005...)" class="w-full border p-2 rounded mb-2 text-sm">
-            <input type="text" id="b2_endpoint" placeholder="B2 Endpoint (s3.us-west-004...)" class="w-full border p-2 rounded mb-2 text-sm">
+            <input type="text" id="b2_endpoint" placeholder="B2 Endpoint (chỉ nhập s3.us-west...)" class="w-full border p-2 rounded mb-2 text-sm">
             <button onclick="saveConfig()" class="w-full bg-gray-800 text-white p-2 rounded font-bold">LƯU CÀI ĐẶT</button>
         </div>
 
-        <!-- Phần Upload -->
         <div id="upload-section" class="hidden">
             <div class="mb-4 bg-blue-50 p-3 rounded">
                 <label class="block font-semibold mb-1 text-sm text-blue-800">1. File Âm Thanh (Chọn nhiều voice):</label>
@@ -50,13 +48,23 @@
             }
         }
 
+        // Hàm làm sạch dữ liệu nhập vào (Xóa khoảng trắng, xóa https://)
+        function cleanInput(val, isEndpoint = false) {
+            let str = val.trim();
+            if (isEndpoint) {
+                str = str.replace(/^https?:\/\//i, ''); // Xóa http:// hoặc https://
+                str = str.replace(/\/+$/, ''); // Xóa dấu / ở cuối
+            }
+            return str;
+        }
+
         function saveConfig() {
-            localStorage.setItem('gh_token', document.getElementById('gh_token').value.trim());
-            localStorage.setItem('gh_username', document.getElementById('gh_username').value.trim());
-            localStorage.setItem('b2_bucket', document.getElementById('b2_bucket').value.trim());
-            localStorage.setItem('b2_key_id', document.getElementById('b2_key_id').value.trim());
-            localStorage.setItem('b2_app_key', document.getElementById('b2_app_key').value.trim());
-            localStorage.setItem('b2_endpoint', document.getElementById('b2_endpoint').value.trim());
+            localStorage.setItem('gh_token', cleanInput(document.getElementById('gh_token').value));
+            localStorage.setItem('gh_username', cleanInput(document.getElementById('gh_username').value));
+            localStorage.setItem('b2_bucket', cleanInput(document.getElementById('b2_bucket').value));
+            localStorage.setItem('b2_key_id', cleanInput(document.getElementById('b2_key_id').value));
+            localStorage.setItem('b2_app_key', cleanInput(document.getElementById('b2_app_key').value));
+            localStorage.setItem('b2_endpoint', cleanInput(document.getElementById('b2_endpoint').value, true));
             location.reload();
         }
 
@@ -67,7 +75,6 @@
             }
         }
 
-        // Hàm mã hóa bằng chip điện thoại (Không cần thư viện ngoài)
         async function hmac(key, string) {
             const encoder = new TextEncoder();
             const keyData = typeof key === 'string' ? encoder.encode(key) : new Uint8Array(key);
@@ -145,7 +152,12 @@
             };
             for(let k in extraHeaders) fetchHeaders[k] = extraHeaders[k];
             
-            return await fetch(url.toString(), { method, headers: fetchHeaders, body });
+            // Thêm chế độ bắt lỗi mạng rõ ràng hơn
+            try {
+                return await fetch(url.toString(), { method, headers: fetchHeaders, body });
+            } catch (err) {
+                throw new Error("Không thể kết nối B2. Hãy chắc chắn Endpoint và Tên Bucket đúng.");
+            }
         }
 
         async function clearInputFolder(bucket, endpoint) {
@@ -163,7 +175,7 @@
         async function uploadToB2(file, filename, bucket, endpoint) {
             const url = `https://${bucket}.${endpoint}/input/${filename}`;
             const res = await signedFetch('PUT', url, file, { 'Content-Type': file.type || 'application/octet-stream' });
-            if(!res.ok) throw new Error("Lỗi upload: " + await res.text());
+            if(!res.ok) throw new Error("Lỗi upload file. Kiểm tra lại quyền Key B2.");
         }
 
         async function startRender() {
