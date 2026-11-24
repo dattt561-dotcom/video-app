@@ -13,7 +13,7 @@
         
         <!-- Phần cài đặt -->
         <div id="config-section" class="mb-4 hidden">
-            <p class="text-sm text-gray-500 mb-2">Bạn chỉ cần nhập cái này 1 lần duy nhất. App sẽ tự lưu trên điện thoại.</p>
+            <p class="text-sm text-gray-500 mb-2">Nhập 1 lần duy nhất. App tự lưu trên điện thoại.</p>
             <input type="text" id="gh_token" placeholder="GitHub Token (ghp_...)" class="w-full border p-2 rounded mb-2 text-sm">
             <input type="text" id="gh_username" placeholder="Tên tài khoản GitHub của bạn" class="w-full border p-2 rounded mb-2 text-sm">
             <input type="text" id="b2_bucket" placeholder="Tên Bucket B2 (VD: auto-video-dat123)" class="w-full border p-2 rounded mb-2 text-sm">
@@ -26,11 +26,11 @@
         <!-- Phần Upload -->
         <div id="upload-section" class="hidden">
             <div class="mb-4 bg-blue-50 p-3 rounded">
-                <label class="block font-semibold mb-1 text-sm text-blue-800">1. File Âm Thanh (Voice):</label>
-                <input type="file" id="audio_file" accept="audio/*" class="w-full text-sm">
+                <label class="block font-semibold mb-1 text-sm text-blue-800">1. File Âm Thanh (Chọn nhiều voice):</label>
+                <input type="file" id="audio_files" accept="audio/*" multiple class="w-full text-sm">
             </div>
             <div class="mb-4 bg-green-50 p-3 rounded">
-                <label class="block font-semibold mb-1 text-sm text-green-800">2. Chọn Ảnh (Giữ nút Ctrl để chọn nhiều ảnh):</label>
+                <label class="block font-semibold mb-1 text-sm text-green-800">2. Chọn Ảnh (Chọn nhiều ảnh):</label>
                 <input type="file" id="image_files" accept="image/*" multiple class="w-full text-sm">
             </div>
             
@@ -41,7 +41,6 @@
     </div>
 
     <script>
-        // Kiểm tra xem đã lưu cấu hình chưa
         window.onload = () => {
             if(localStorage.getItem('b2_endpoint')) {
                 document.getElementById('config-section').classList.add('hidden');
@@ -69,10 +68,8 @@
             }
         }
 
-        // Hàm kết nối B2
         function getAWS() {
             const endpoint = localStorage.getItem('b2_endpoint');
-            // Tự động đoán vùng region từ endpoint
             let region = 'us-west-004';
             if(endpoint.includes('us-west-001')) region = 'us-west-001';
             if(endpoint.includes('us-west-002')) region = 'us-west-002';
@@ -86,14 +83,11 @@
             });
         }
 
-        // Xóa file cũ trên B2 để không bị lẫn video cũ
         async function clearInputFolder(aws, bucket, endpoint) {
             document.getElementById('status').innerText = "Đang dọn dẹp file cũ...";
             const listUrl = `https://${bucket}.${endpoint}/?list-type=2&prefix=input/`;
             const listRes = await aws.fetch(listUrl);
             const xml = await listRes.text();
-            
-            // Dùng Regex tìm tên file
             const keys = [...xml.matchAll(/<Key>(.*?)<\/Key>/g)].map(m => m[1]);
             for(const key of keys) {
                 await aws.fetch(`https://${bucket}.${endpoint}/${key}`, { method: 'DELETE' });
@@ -110,10 +104,10 @@
             const btn = document.getElementById('btn-render');
             const status = document.getElementById('status');
             
-            const audioFile = document.getElementById('audio_file').files[0];
+            const audioFiles = document.getElementById('audio_files').files;
             const imageFiles = document.getElementById('image_files').files;
 
-            if(!audioFile || imageFiles.length === 0) {
+            if(audioFiles.length === 0 || imageFiles.length === 0) {
                 alert("Vui lòng chọn đủ file âm thanh và ít nhất 1 ảnh!");
                 return;
             }
@@ -127,19 +121,24 @@
                 const endpoint = localStorage.getItem('b2_endpoint');
                 const aws = getAWS();
 
-                // Bước 1: Dọn dẹp
+                // Dọn dẹp file cũ
                 await clearInputFolder(aws, bucket, endpoint);
 
-                // Bước 2: Upload file
-                status.innerText = "Đang upload âm thanh...";
-                await uploadToB2(aws, audioFile, audioFile.name, bucket, endpoint);
-
-                for(let i=0; i<imageFiles.length; i++) {
-                    status.innerText = `Đang upload ảnh ${i+1}/${imageFiles.length}...`;
-                    await uploadToB2(aws, imageFiles[i], imageFiles[i].name, bucket, endpoint);
+                // Upload âm thanh (Đánh số 01, 02, 03 để xếp đúng thứ tự)
+                for(let i=0; i<audioFiles.length; i++) {
+                    status.innerText = `Đang upload âm thanh ${i+1}/${audioFiles.length}...`;
+                    const prefix = (i+1).toString().padStart(2, '0');
+                    await uploadToB2(aws, audioFiles[i], `audio_${prefix}_${audioFiles[i].name}`, bucket, endpoint);
                 }
 
-                // Bước 3: Ra lệnh cho GitHub Bot
+                // Upload ảnh
+                for(let i=0; i<imageFiles.length; i++) {
+                    status.innerText = `Đang upload ảnh ${i+1}/${imageFiles.length}...`;
+                    const prefix = (i+1).toString().padStart(2, '0');
+                    await uploadToB2(aws, imageFiles[i], `image_${prefix}_${imageFiles[i].name}`, bucket, endpoint);
+                }
+
+                // Ra lệnh cho GitHub
                 status.innerText = "Đang ra lệnh cho AI render...";
                 const ghToken = localStorage.getItem('gh_token');
                 const ghUser = localStorage.getItem('gh_username');
